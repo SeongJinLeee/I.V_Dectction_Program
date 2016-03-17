@@ -1,0 +1,366 @@
+using System;
+using System.IO.Ports;
+using System.Runtime.InteropServices;
+using System.Windows.Forms;
+using System.Management;
+using System.Threading;
+using Excel = Microsoft.Office.Interop.Excel;
+using System.Collections.Generic;
+
+namespace DisplayUSBList        //프로젝트 이름
+{
+    public partial class Form1 : Form
+    {
+        public static byte COMMAND_FIRST_SCREEN = 0x00;
+        public static byte COMMAND_LOAD = 0x01;
+        public static byte COMMAND_SET_TIME = 0x02;
+        public static byte SIG_END_SET_TIME = 0x03;
+        public static byte SIG_FAIL_DELETED = 0x04;
+        public static byte COMMAND_ERROR_SIG = 0x05;
+        public static byte SIG_SUCCESS = 0x06;
+        public static byte SIG_SYNC_TIME = 0x07;
+        public static byte COMMAND_START_SIG = 0x08;
+        public static byte COMMAND_END_SIG = 0x09;
+        public static bool Connect = false;
+        public static bool ReadData = false;
+        public static string getData = "";
+
+        SerialPort sp = new SerialPort();
+        
+        public static DateTime Nowtime = DateTime.Now;
+
+        public int NowYear = Nowtime.Year;
+        public int NowMonth = Nowtime.Month;
+        public int NowDay = Nowtime.Day;
+        public int NowHour = Nowtime.Hour;
+        public int NowMin = Nowtime.Minute;
+        public int NowSec = Nowtime.Second;
+        public int NowMilSec = Nowtime.Millisecond;
+
+        public Form1()      //폼 이름
+        {
+            InitializeComponent();
+
+            //트레이 아이콘을 설정해준다.
+            this.WindowState = FormWindowState.Minimized;
+            this.ShowInTaskbar = false;
+            this.Visible = false;
+            this.notifyIcon1.Visible = true;
+            notifyIcon1.ContextMenuStrip = contextMenuStrip1;
+            GetSerialPort();
+        }
+
+        protected override void WndProc(ref Message m)
+        {
+            UInt32 WM_DEVICECHANGE = 0x0219;
+            UInt32 DBT_DEVTUP_VOLUME = 0x03;        //usb 타입 
+            UInt32 DBT_DEVICEARRIVAL = 0x8000;
+            UInt32 DBT_DEVICEREMOVECOMPLETE = 0x8004;
+
+
+            if ((m.Msg == WM_DEVICECHANGE) && (m.WParam.ToInt32() == DBT_DEVICEARRIVAL))//디바이스 연결 시 이벤트
+            {
+
+                int devType = Marshal.ReadInt32(m.LParam, 4);       //디바이스 연결 이벤트 시 타입
+
+                //MessageBox.Show("change - arrival : " + devType.ToString());
+                
+                if (devType == DBT_DEVTUP_VOLUME)
+                {
+                    GetSerialPort();
+                }
+            }
+
+            if ((m.Msg == WM_DEVICECHANGE) && (m.WParam.ToInt32() == DBT_DEVICEREMOVECOMPLETE))  //디바이스 연결 해제시 이벤트
+            {
+                //MessageBox.Show("change - remove");
+                //Console.WriteLine("[ data ]");
+                //Console.Write(getData);
+                int devType = Marshal.ReadInt32(m.LParam, 4);
+                
+                if (devType == DBT_DEVTUP_VOLUME)
+                {
+                    GetSerialPort();
+                    Connect = false;
+                }
+            }
+
+            base.WndProc(ref m);
+        }
+
+
+        public void GetSerialPort()
+        {
+
+            //listBox1.Items.Clear();
+
+            try
+            {
+                //foreach (string str in SerialPort.GetPortNames())     //모든 포트 리스트 뽑을때
+
+                string ArduinoPortNum = AutodetectArduinoPort();       //아두이노 포트넘버를 받아온다
+                //listBox1.Items.Add(ArduinoPortNum);
+                sp.PortName = ArduinoPortNum;       //포트이름이랑 통신속도만 설정해줘도 나머지는 defult값으로 설정된다.
+                sp.BaudRate = (int)250000;      ////이렇게 하니 데이터 손실이 보이지 않는다.
+                sp.DataBits = (int)8;
+                sp.Parity = Parity.None;
+                sp.StopBits = StopBits.One;
+
+
+                sp.DataReceived += new SerialDataReceivedEventHandler(SerialReceive);       //핸들러 이벤트를 선언한다.
+
+                sp.Open();      //시리얼 포트를 연다
+
+                if(sp.IsOpen)       //시리얼 포트가 열렸다면
+                {
+                    //MessageBox.Show("success Connect");
+                    Console.WriteLine("\n[ * Try to Connect with Arduino ]");
+                    WriteByte(COMMAND_FIRST_SCREEN);
+                }
+                else // 포트를 뺐다면 여기 오기전에 exception 발생으로 이까지 못온다..
+                {
+                    MessageBox.Show("fail Connect");
+                    Connect = false;
+                }
+
+            }
+            catch (Exception ex)
+            {
+                Connect = false;
+                //MessageBox.Show(ex.Message);
+            }
+        }
+        
+
+        private void SerialReceive(object sender, SerialDataReceivedEventArgs e)
+        {
+
+            try {
+                int readData = sp.ReadByte();
+                String readDataString = sp.ReadExisting();
+
+
+                //Thread.Sleep(1000);      //숫자가 작을수록 많은 데이터 손실
+                //MessageBox.Show(readData.ToString());
+
+                if (Connect) // 아두이노와 연결이 돼어있다면
+                {
+                    if (!ReadData)      //SD 데이터를 읽어오는 중이 아니라면
+                    {
+                        if (readData == COMMAND_ERROR_SIG)      //아두이노 SD 카드 오픈 에러 신호
+                        {
+                            MessageBox.Show("SD 카드를 확인 하고 다시 연결 해주세요");
+                            Connect = false;
+                        }
+                        else if (readData == COMMAND_START_SIG)
+                        {
+                            ReadData = true;
+                            Console.WriteLine("[ * Read Data From NOW ]");
+                        }
+                    }
+                    else        //SD 데이터를 읽어오는 중이라면
+                    {
+                        if (readData == COMMAND_END_SIG)        //데이터 읽기 끝나는 신호가 왔다면
+                        {
+                            ReadData = false;
+                            Console.WriteLine("\n[ * Finish Read Data ]");
+                            Thread.Sleep(100);
+                            saveToExcel();
+                            //Console.Write(getData);
+                            //System.IO.File.WriteAllText(@"C:\Users\user\Documents\Inspection record\"+NowYear+"/"+NowMonth+"/"+NowDay+".txt", getData);
+                        }
+                        else        //데이터를 읽기 끝나는 신호가 오지않고 SD데이터를 읽어오는 중이라면
+                        {
+                            getData += readDataString;
+                            Console.Write(readDataString);
+                        }
+                    }
+                }
+                else // 아두이노와 연결이 안돼어있다면
+                {
+                    if (readData == SIG_SUCCESS)
+                    {
+                        Console.WriteLine("[ * "+NowYear+"년 "+NowMonth+"월 "+NowDay+"일 "+NowHour+":"+NowMin+":"+NowSec+"."+NowMilSec+" ]");
+                        Console.WriteLine("[ * Successfully Connected with Arduino ]");
+                        Connect = true;
+                        sp.WriteLine("0"+NowHour + "." + NowMin + "." + NowSec + "." + NowDay + "." + NowMonth + "."+ NowYear);     //아두이노 시간 초기화 함수 아두이노에선 string으로 받는다.
+                        Thread.Sleep(1500);     //string을 보낸 이후 최소 1.5초는 기다려야 serial을 보낼 수 있다. (개인 확인)
+                        WriteByte(COMMAND_LOAD);
+                        Console.WriteLine("[ * Requst for get Data ]");
+                    }
+                }
+            }
+            catch (Exception ex)
+            {
+                Console.WriteLine(ex);
+            }
+            Thread.Sleep(1000);
+        }
+
+
+        private void saveToExcel()
+        {
+            //엑셀 파일을 만들기 위한 준비
+            Excel.Application excelApp = null;
+            Excel.Workbook wb = null;
+            Excel.Worksheet ws = null;
+
+            List<string> subTitle = new List<string>()  //열 별 부 제목
+            { "Data Type", "Value Type", "Patient ID", "Time","Wave Length 1","Wave Length 2","Wave Length 3","Wave Length 4","Result Value" };
+            char[] delimiterChar = { '.', '\n' };       //Split할 char
+            char[] delimiterByNull = { '\n' };
+
+            try
+            {
+                // Excel 첫번째 워크시트 가져오기
+                excelApp = new Excel.Application();
+                wb = excelApp.Workbooks.Add();
+                ws = wb.Worksheets.get_Item(1) as Excel.Worksheet;
+
+                string[] Data = getData.Split(delimiterChar, StringSplitOptions.RemoveEmptyEntries);
+                string[] NullCount = getData.Split(delimiterByNull, StringSplitOptions.RemoveEmptyEntries);
+
+                // 데이터 넣기
+                int i = 1;
+                foreach (var title in subTitle)     //열 별 부 제목 쓰기
+                {
+                    ws.Cells[1, i] = title;
+                    i++;
+                }
+
+                int DataCount = 0;
+                for (int j = 0; j < NullCount.Length; j++)
+                {
+                    for (int k = 0; k < 9; k++)
+                    {
+                        ws.Cells[j + 2, k + 1] = Data[DataCount];       //열과 행에 데이터를 쓴다
+                        DataCount++;
+                    }
+                }
+
+                //저장 다이얼로그를 띄워줌으로써 위치와 이름을 정할 수 있도록 한다.
+                SaveFileDialog saveFileDialog = new SaveFileDialog();
+                saveFileDialog.Filter = "Execl files (*.xls)|*.xls";
+                saveFileDialog.FilterIndex = 0;
+                saveFileDialog.OverwritePrompt = false;     //이걸 true로 하면 기존파일이 있다는걸 두번물어보기에 필요없음
+                saveFileDialog.RestoreDirectory = true;     //파일 저장시 다른위치로 저장시 다음 저장엔 그 위치를 기본으로 한다
+                saveFileDialog.CreatePrompt = false;        //존재하지않는 파일을 만들때 만들것인지 물어봄 필요없음
+                saveFileDialog.FileName = NowYear+""+NowMonth+""+NowDay;       //기본 이름
+                saveFileDialog.Title = "Save path of the file to be exported";
+
+                DialogResult ret = STAShowDialog(saveFileDialog);
+                if (ret == DialogResult.OK)
+                {
+                    //Save. The selected path can be got with saveFileDialog.FileName.ToString()
+                    
+                    wb.SaveAs(saveFileDialog.FileName.ToString(), Excel.XlFileFormat.xlWorkbookNormal);     //xml을 저장한다
+                    System.Diagnostics.Process.Start(@System.IO.Path.GetDirectoryName(saveFileDialog.FileName.ToString()));     //저장된 폴더를 연다
+                }
+
+                wb.Close(false);        //무조건 false 줘야 통합문서 저장이 다시한번 뜨지 않는다.
+                excelApp.Quit();
+
+            }
+
+            finally
+            {
+                // Clean up 마지막으로 사용 후에는 Excel 객체들을 Release해 주어야 백그라운드에 Excel.exe가 남지 않는다. 
+                ReleaseExcelObject(ws);
+                ReleaseExcelObject(wb);
+                ReleaseExcelObject(excelApp);
+            }
+            
+        }
+
+        //다운로드 dialog를 띄우기위한 스레드 셋팅
+        private DialogResult STAShowDialog(FileDialog dialog)
+        {
+            DialogState state = new DialogState();
+            state.dialog = dialog;
+            System.Threading.Thread t = new System.Threading.Thread(state.ThreadProcShowDialog);
+            t.SetApartmentState(System.Threading.ApartmentState.STA);
+            t.Start();
+            t.Join();
+            return state.result;
+        }
+
+        private static void ReleaseExcelObject(object obj)
+        {
+            try
+            {
+                if (obj != null)
+                {
+                    Marshal.ReleaseComObject(obj);
+                    obj = null;
+                }
+            }
+            catch (Exception ex)
+            {
+                obj = null;
+                throw ex;
+            }
+            finally
+            {
+                GC.Collect();
+            }
+        }
+
+        private string AutodetectArduinoPort()
+        {
+            ManagementScope connectionScope = new ManagementScope();
+            SelectQuery serialQuery = new SelectQuery("SELECT * FROM Win32_SerialPort");
+            ManagementObjectSearcher searcher = new ManagementObjectSearcher(connectionScope, serialQuery);
+
+            Thread.Sleep(5000);     //최소 5초를 줘야 정상으로 작동함. 그 이하는 안됌..
+
+            foreach (ManagementObject item in searcher.Get())
+            {
+                string desc = item["Description"].ToString();       //포트 이름 ex) Arduino
+                string deviceId = item["DeviceID"].ToString();      //포트 넘버
+
+                if (desc.Contains("Arduino Uno"))
+                {
+                    return deviceId;
+                }
+            }
+
+            return null;
+        }
+
+        public void WriteByte(byte data)
+        {
+            var dataArray = new byte[] { data };
+            sp.Write(dataArray, 0, 1);
+        }
+
+        //트레이 아이콘에서 종료 버튼을 눌렸을시 동작
+        private void 종료ToolStripMenuItem_Click_1(object sender, EventArgs e)
+        {
+            Application.Exit();
+        }
+
+        //기본 From으로 지우면 안됀다!!
+        private void Form1_Load(object sender, EventArgs e)
+        {
+
+        }
+
+        private void notifyIcon1_MouseDoubleClick(object sender, MouseEventArgs e)
+        {
+
+        }
+    }
+
+    //저장시 다이얼로그 상태를 확인하는 클래스
+    public class DialogState
+    {
+        public DialogResult result;
+        public FileDialog dialog;
+
+        public void ThreadProcShowDialog()
+        {
+            result = dialog.ShowDialog();
+        }
+    }
+
+}
