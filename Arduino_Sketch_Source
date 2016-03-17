@@ -1,0 +1,394 @@
+#define Potential A0
+
+#include <SoftwareSerial.h>   //다른 시리얼 포트를 쓰기위함!
+#include <SPI.h>
+#include <SD.h>
+#include <avr/pgmspace.h>   //flash 메모리에 상수를 써주기 위해서 사용한다.
+#include <Adafruit_GFX.h>
+#include <TFT_ILI9163C.h>
+#include <Time.h>
+
+#define BLACK   0x0000   //LCD에 사용할 색상 정의
+#define BLUE    0x001F
+#define RED     0xF800
+#define GREEN   0x07E0
+#define CYAN    0x07FF
+#define MAGENTA 0xF81F
+#define YELLOW  0xFFE0  
+#define WHITE   0xFFFF
+
+#define __CS 10   //LCD 핀 설정!!
+#define __DC 9
+
+#define   COMMAND_FIRST_SCREEN   0x00   //첫 시작 화면. 대기상태
+#define   COMMAND_LOAD    0x01    //불러오기 신호 시
+#define   COMMAND_SET_TIME    0x02    //시간 초기화 신호 시
+#define   SIG_END_SET_TIME     0x03
+#define   SIG_FAIL_DELETED      0x04
+#define   COMMAND_ERROR_SIG   0x05
+#define   SIG_SUCCESS   0x06
+#define   SIG_SYNC_TIME    0x07
+#define   COMMAND_START_SIG   0x08   //신호를 보낼 때 첫 신호
+#define   COMMAND_END_SIG   0x09   //신호를 보낼 때 마지막 신호 (구분자)
+
+int button2 = 4;     //4번 핀에 init 입력 버튼
+int button3 = 5;    //5번 핀에 침윤값 입력 버튼
+int printed = 1;
+String code = "";           //initialize the output string
+boolean endbit = 0;            //a flag to mark 0D received
+char temp;
+String TimePieces[6]; //시,분,초,일,월,년 6개의 데이터를 받을것 time함수 정의에 맞게 하기 위함
+int initTimeCounter = 0;
+int lastIndex = 0;
+boolean initTime = false;
+boolean waitForSet = false;
+int checkMin = 0;
+boolean SDCheck = true;
+boolean button1_Input = false;
+boolean button2_Input = false;
+boolean button3_Input = false;
+int compMin = 0;
+
+File myFile;
+SoftwareSerial mySerial(7, 6); // RX, TX
+TFT_ILI9163C tft = TFT_ILI9163C(__CS, __DC);    //LCD TFT 설정!
+
+void setup() {
+  
+  Serial.begin(250000);   //이렇게 하니 데이터 손실이 보이지 않는다.
+  mySerial.begin(9600);
+  
+  attachInterrupt(0,sw0_input,FALLING);    //외부인터럽트 0번은 2번핀을 의미, FALLING이 발생하면 sw0_input 함수 발생
+  pinMode(Potential, INPUT);
+  pinMode(button2, INPUT);
+  pinMode(button3, INPUT);
+  
+  SD.begin(8);
+  tft.begin();
+  setText("waitScreen");
+  
+}
+
+
+void loop() 
+{
+  int sensorValue;
+  int button2_state = digitalRead(button2);
+  int button3_state = digitalRead(button3);
+
+  if(waitForSet){   //초기 세팅 통신시에 기다린다.   
+    if(checkMin!=minute() && !button1_Input){   //분이 이전 분이랑 달라졌고, 버튼 입력이 안들어왔을 때 실행
+      myFile = SD.open("test.txt");
+      setText("waitScreen");
+      myFile.close();
+      checkMin = minute();
+    } else if(button1_Input){
+      if(compMin == (minute()-2)){ //버튼1입력이 들어왔고 버튼입력이 된 이후 약 1~2분 차이가 나면 실행
+        compMin = 0;
+        button1_Input = false;
+        button2_Input = false;
+        button3_Input = false;
+        myFile = SD.open("test.txt");
+        setText("waitScreen");
+        myFile.close();
+      } else if(button2_state==LOW){ //버튼2가 눌려졌을때
+        if(!button2_Input){  //버튼2가 최초 입력시
+          button2_Input = true;
+          myFile = SD.open("test.txt");
+          setText("inputData");
+          myFile.close();
+        }
+        //여기에 버튼2가 입력 받을 값을 int 값으로 받는다.
+        compMin = minute();
+      } else if(button2_Input&&(button3_state==LOW)){//버튼2가 입력이 되었고, 버튼 3이 눌려졌을때
+        if(!button3_Input){   //버튼3이 최초 입력시
+          button3_Input = true;
+          myFile = SD.open("test.txt");
+          setText("inputData");
+          myFile.close();
+        }
+        //여기에 버튼3으로 입력 받을 값을 int 값으로 받는다
+        compMin = minute();
+      }
+    }
+  }
+  
+  
+//////////////rs232 출력의 바코드 스캐너를 읽는 코드//////////
+  if (mySerial.available() > 0)     {
+      temp = char(mySerial.read());    //read the input data
+      code += temp;
+  }
+  if (temp == 0x0D){           // Or temp == '\r'
+    tft.fillScreen();
+    tft.setCursor(0, 0);
+    tft.setTextColor(WHITE);
+    tft.setTextSize(2);
+    tft.println(code);
+    code = "";
+    endbit = 0;
+    temp = 0;
+  }
+  //////////////////////////////////////////////////////
+  
+//  if(pin == 0)  // 버튼이 5v 이면 (눌리면)
+//  {
+//    sensorValue = analogRead(Potential); //아날로그 입력 받는다
+//    
+//    myFile = SD.open("test.txt", FILE_WRITE);
+//    myFile.close();
+//    pin = 1;
+//  }
+//  else if(pin == 1)  // 버튼이 0v 이면 (떨어져 있으면)
+//  {
+//    
+//   } //버튼 if문
+   
+} // LOOP()
+
+void serialEvent(){   //시리얼 이벤트가 발생하면 함수 동작
+  
+    byte seri = (byte)Serial.read();
+//    char charSeri = (char)Serial.read();
+    String stSeri = Serial.readString();
+
+    if(initTime){  //여기서 시간 세팅을 위한 함수
+      setRealTime(stSeri);    //시간을 세팅한다
+//      setText("setTime");
+      initTime = false;
+    }
+
+    if(seri==COMMAND_FIRST_SCREEN){
+      Serial.write(SIG_SUCCESS);
+//      setText("serialConnect");
+      initTime = true;
+    }
+    else if(seri==COMMAND_LOAD){
+      myFile = SD.open("test.txt");
+      if(myFile){   //파일이 열렸다면
+          Serial.write(COMMAND_START_SIG);    //전송 시작을 알림
+//          setText("sendData");
+          delay(500);
+          while(myFile.available()){
+            Serial.write(myFile.read());
+          }
+          delay(500);
+          Serial.write(COMMAND_END_SIG);    //마지막을 알림
+//          setText("finishSend");
+      } else {
+        Serial.write(COMMAND_ERROR_SIG);
+//        setText("err");
+      }
+      setText("waitScreen");
+      checkMin = minute();
+      myFile.close();
+      
+      waitForSet = true;
+      
+    }
+//      else if(seri==COMMAND_DELETE){
+//          SD.remove("test.txt");
+//      }
+}
+
+unsigned long setText(String state) {
+//  unsigned long start;
+  
+  if(state.equals("clean")){
+      tft.fillScreen();
+//  } else if(state.equals("init")){
+//      tft.fillScreen();
+//      //start = micros();
+//      tft.setCursor(0, 0);
+//      tft.setTextColor(WHITE);  
+//      tft.setTextSize(2);
+//      tft.println("LCD INIT");
+//      tft.println("NOW !");
+//      delay(500);
+//      tft.setTextColor(YELLOW); 
+//      tft.setTextSize(2);
+//      tft.println();
+//      tft.println("  OK  !");
+//      //return micros() - start; //띄우기 까지 얼마나 시간이 걸리는지 체크용
+//  } else if(state.equals("serialConnect")){
+//      tft.fillScreen();
+//      tft.setCursor(0, 0);
+//      tft.setTextColor(WHITE);
+//      tft.setTextSize(2);
+//      tft.println("CONNECT");
+//      tft.println("SUCCESS");
+//  } else if(state.equals("setTime")){
+//      tft.println("");
+//      tft.println("COMPLETE");
+//      tft.println("INIT TIME");
+//  } else if(state.equals("sendData")){
+//      tft.fillScreen();
+//      tft.setCursor(0, 0);
+//      tft.setTextColor(WHITE);
+//      tft.setTextSize(2);
+//      tft.println("CONNECT");
+//      tft.setTextColor(YELLOW);
+//      tft.println("DATA");
+//      tft.println("SENDING");
+//      tft.println("NOW !");
+//  } else if(state.equals("finishSend")){
+//      tft.setTextColor(GREEN);
+//      tft.println("COMPLETE");
+//  } else if(state.equals("err")){
+//      tft.fillScreen();
+//      tft.setCursor(0, 0);
+//      tft.setTextColor(WHITE);
+//      tft.setTextSize(2);
+//      tft.println("CONNECT");
+//      tft.setTextColor(RED);
+//      tft.setTextSize(2);
+//      tft.println("FILE OPEN");
+//      tft.println("ERROR !!");
+  } else if(state.equals("waitScreen")){
+      tft.fillScreen();
+      tft.setCursor(0, 0);
+      tft.setTextColor(WHITE);
+      tft.setTextSize(1);
+      
+      drawBettery();    //배터리 상태를 그린다.
+      
+      tft.setTextSize(3);
+      tft.println();
+      if(myFile){   //SD카드 내 파일이 열렸으면
+        if(hour()<10){    //10보다 작으면
+          tft.print(" 0"+String(hour())+":");    //string은 string 조합으로만.. int는 int조합으로만
+        }
+        else{
+          tft.print(" "+String(hour())+":");
+        }
+        
+        if(minute()<10){
+          tft.println("0"+String(minute()));
+        }
+        else{
+          tft.println(minute());
+        }
+      } 
+      else if(!waitForSet){
+        tft.println("NO TIME");
+      }
+      else { 
+        //SD카드 내 파일이 열리지 않았다면
+        tft.println(" NO SD");
+      }
+      tft.setTextSize(1);
+      tft.println();
+      tft.println("      "+String(year())+"/"+String(month())+"/"+String(day()));
+      tft.setTextSize(2);
+      tft.println();
+      tft.println("    I.V.");
+      tft.println(" DETECTION");
+      
+  } else if(state.equals("inputData")){
+      tft.fillScreen();
+      tft.setCursor(0, 0);
+      tft.setTextColor(WHITE);
+      tft.setTextSize(1);
+      
+      drawBettery();    //배터리 상태를 그린다.
+      
+      tft.setTextSize(2);
+      tft.println();
+      if(!waitForSet){    //초기화가 되지 않았다면
+        tft.println();
+        tft.setTextSize(3);
+        tft.println("  NEED");
+        tft.setTextColor(RED);
+        tft.println("  SET");
+        tft.setTextColor(WHITE);
+        tft.println(" FIRST");
+      } else {
+//        if(myFile){  //SD카드 내 파일이 열렸으면
+          tft.print("Pt. ID :");
+          tft.setTextColor(GREEN);
+          tft.println("OK");
+          tft.setTextColor(WHITE);
+          tft.print("InitCON:");
+          if(!button2_Input){   //버튼 2의 입력이 없을경우
+            tft.setTextColor(YELLOW);
+            tft.println("<");
+          } else{
+            tft.setTextColor(GREEN);
+            tft.println("OK");
+          }
+          tft.setTextColor(WHITE);
+          tft.print("IV CON :");
+          if(!button3_Input&&button2_Input){   //버튼 3의 입력이 없을경우
+            tft.setTextColor(YELLOW);
+            tft.print("<");
+          } else if(button3_Input){
+            tft.setTextColor(GREEN);
+            tft.print("OK");
+          }
+          tft.println();
+          tft.setTextColor(WHITE);
+          tft.println();
+          if(!button3_Input){
+            tft.println("  MEASURE");
+            tft.println(" CONDITION");
+          } else {
+            tft.setTextSize(5);
+            tft.setTextColor(YELLOW);
+            tft.println("  @");
+          }
+//        } else { //SD카드 내 파일이 열리지 않았다면
+//          tft.setTextSize(3);
+//          tft.println(" NO SD");
+//        }
+      }
+  }
+}
+
+void setRealTime(String realTime){//String 문장에서 dot 을 기준으로 나누어 TimePieces 배열에 하나씩 넣는다
+    for(int i = 0; i < realTime.length(); i++){
+      if(realTime.substring(i,i+1) == "."){
+        TimePieces[initTimeCounter] = realTime.substring(lastIndex,i);
+        lastIndex = i + 1;
+        initTimeCounter++;
+      }
+      if(i == realTime.length() - 1){
+        TimePieces[initTimeCounter] = realTime.substring(lastIndex,i);
+      }
+   }
+    setTime(TimePieces[0].toInt(),TimePieces[1].toInt(),TimePieces[2].toInt(),TimePieces[3].toInt(),TimePieces[4].toInt(),TimePieces[5].toInt());
+    initTimeCounter = 0;
+    lastIndex = 0;
+}
+
+void sw0_input(){
+  button1_Input = true;
+  button2_Input = false;
+  button3_Input = false;
+  delay(1000);    //딜레이로 버튼 연속 입력이 되지않도록
+  
+  myFile = SD.open("test.txt");
+  compMin = minute();   //입력받은 분과 이후 시간이 흘렀을경우 시간을 비교하기 위한 함수
+  setText("inputData");
+  
+  myFile.close();
+}
+
+void drawBettery(){
+  int i = 1;
+  //배터리 전압 상태를 받아오면 0~100 으로 map(변수,변경 전 최솟값, 최댓값, 변경 후 최솟값, 최댓값) 함수를 써서 바꾸어 넣는다
+  ////////////배터리 배경 틀////////////
+      tft.drawLine(107,0,107,5,WHITE);    //배터리 왼쪽 세로줄    (시작 x, y, 끝 x, y, 색)
+      tft.drawLine(107,0,123,0,WHITE);    //배터리 위쪽 가로줄
+      tft.drawLine(123,0,123,5,WHITE);    //배터리 오른쪽 세로줄
+      tft.drawLine(107,5,123,5,WHITE);    //배터리 아래쪽 가로줄
+      tft.drawLine(124,1.25,124,3.75,WHITE);    //배터리 꼭다리 세로줄
+      tft.drawLine(125,1.25,125,3.75,WHITE);    //배터리 꼭다리 세로줄
+ ///////////////////////////////////////
+//      if(bett==100){    // * [미구현] 배터리가 100% 상태이면
+        tft.println("             100%");
+        for(i;i<5;i++){   //가로줄로 배터리 량을 그린다  *4번 그리면 됌
+          tft.drawLine(108,i,122,i,GREEN);
+        }
+//      }
+}
+  
